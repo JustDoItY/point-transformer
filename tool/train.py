@@ -36,12 +36,17 @@ def get_parser():
     return cfg
 
 
-def get_logger():
+def get_logger(save_path):
     logger_name = "main-logger"
     logger = logging.getLogger(logger_name)
     logger.setLevel(logging.INFO)
-    handler = logging.StreamHandler()
     fmt = "[%(asctime)s %(levelname)s %(filename)s line %(lineno)d %(process)d] %(message)s"
+    formatter = logging.Formatter(fmt)
+    file_handler = logging.FileHandler('%s/log.txt' % (save_path))
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter(fmt))
     logger.addHandler(handler)
     return logger
@@ -114,7 +119,7 @@ def main_worker(gpu, ngpus_per_node, argss):
 
     if main_process():
         global logger, writer
-        logger = get_logger()
+        logger = get_logger(args.save_path)
         writer = SummaryWriter(args.save_path)
         logger.info(args)
         logger.info("=> creating model ...")
@@ -210,13 +215,13 @@ def main_worker(gpu, ngpus_per_node, argss):
                 best_iou = max(best_iou, mIoU_val)
 
         if (epoch_log % args.save_freq == 0) and main_process():
-            filename = args.save_path + '/model/model_last.pth'
+            filename = args.save_path + '/model_last.pth'
             logger.info('Saving checkpoint to: ' + filename)
             torch.save({'epoch': epoch_log, 'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict(),
                         'scheduler': scheduler.state_dict(), 'best_iou': best_iou, 'is_best': is_best}, filename)
             if is_best:
                 logger.info('Best validation mIoU updated to: {:.4f}'.format(best_iou))
-                shutil.copyfile(filename, args.save_path + '/model/model_best.pth')
+                shutil.copyfile(filename, args.save_path + '/model_best.pth')
 
     if main_process():
         writer.close()
