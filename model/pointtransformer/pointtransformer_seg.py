@@ -20,19 +20,26 @@ class PointTransformerLayer(nn.Module):
                                     nn.BatchNorm1d(mid_planes // share_planes), nn.ReLU(inplace=True),
                                     nn.Linear(out_planes // share_planes, out_planes // share_planes))
         self.softmax = nn.Softmax(dim=1)
+        self.linear_r = nn.Linear(out_planes, out_planes)
         
     def forward(self, pxo) -> torch.Tensor:
         p, x, o = pxo  # (n, 3), (n, c), (b)
         x_q, x_k, x_v = self.linear_q(x), self.linear_k(x), self.linear_v(x)  # (n, c)
         x_k = pointops.queryandgroup(self.nsample, p, p, x_k, None, o, o, use_xyz=True)  # (n, nsample, 3+c)
-        x_v = pointops.queryandgroup(self.nsample, p, p, x_v, None, o, o, use_xyz=False)  # (n, nsample, c)
-        p_r, x_k = x_k[:, :, 0:3], x_k[:, :, 3:]
+        # x_v = pointops.queryandgroup(self.nsample, p, p, x_v, None, o, o, use_xyz=False)  # (n, nsample, c)
+        p_r, x_k, x_v = x_k[:, :, 0:3], x_k[:, :, 3:], x_k[:, :, 3:]
         for i, layer in enumerate(self.linear_p): p_r = layer(p_r.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i == 1 else layer(p_r)    # (n, nsample, c)
         w = x_k - x_q.unsqueeze(1) + p_r.view(p_r.shape[0], p_r.shape[1], self.out_planes // self.mid_planes, self.mid_planes).sum(2)  # (n, nsample, c)
         for i, layer in enumerate(self.linear_w): w = layer(w.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i % 3 == 0 else layer(w)
         w = self.softmax(w)  # (n, nsample, c)
         n, nsample, c = x_v.shape; s = self.share_planes
-        x = ((x_v + p_r).view(n, nsample, s, c // s) * w.unsqueeze(2)).sum(1).view(n, c)
+        x_end_feat = ((x_v + p_r).view(n, nsample, s, c // s) * w.unsqueeze(2)).sum(1).view(n, c)
+        #####
+        # 特征增强，下减去原来的特征，再加上attetion_feature
+        #####
+        x_end_feat = x_end_feat - x
+        x_diff = self.linear_r(x_end_feat)
+        x = x_diff + x_end_feat
         return x
 
 
@@ -144,8 +151,9 @@ class PointTransformerSeg(nn.Module):
         layers = []
         layers.append(TransitionDown(self.in_planes, planes * block.expansion, stride, nsample))
         self.in_planes = planes * block.expansion
+        block_current = block(self.in_planes, self.in_planes, share_planes, nsample=nsample) # 循环训练一个block，而不是生成多个block去训练
         for _ in range(1, blocks):
-            layers.append(block(self.in_planes, self.in_planes, share_planes, nsample=nsample))
+            layers.append(block_current)
         return nn.Sequential(*layers)
 
     def _make_dec(self, block, planes, blocks, share_planes=8, nsample=16, is_head=False):
